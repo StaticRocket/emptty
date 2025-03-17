@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -20,29 +22,52 @@ type issueVariable struct {
 	arg   string
 }
 
+// Check if already running as a daemon
+func isDaemon() bool {
+	if os.Getppid() != 1 {
+		// parent is not init
+		return false
+	}
+	logPrintf("daemon")
+	return true
+}
+
 // Starts emptty as daemon spawning emptty on defined TTY, if allowed.
 func startDaemon(conf *config) *os.File {
 	if !conf.DaemonMode {
 		return nil
 	}
 
-	fTTY, err := os.OpenFile(conf.ttyPath(), os.O_RDWR, 0700)
-	if err != nil {
-		logFatal(err)
+	if !isDaemon() {
+		fTTY, err := os.OpenFile(conf.ttyPath(), os.O_RDWR, 0700)
+		if err != nil {
+			logFatal(err)
+		}
+
+		bin, err := exec.LookPath(os.Args[0])
+		if err != nil {
+			logFatal(err)
+		}
+
+		proc, err := os.StartProcess(bin, os.Args, &os.ProcAttr{Dir: "", Env: nil,
+		Files: []*os.File{fTTY, fTTY, fTTY}, Sys: &syscall.SysProcAttr{Setsid: true}})
+		proc.Release()
+
+		if err != nil {
+			logFatal(err)
+		}
+
+		os.Exit(0)
 	}
 
 	if conf.EnableNumlock {
-		setKeyboardLeds(fTTY, false, true, false)
+		setKeyboardLeds(os.Stdout, false, true, false)
 	}
 
-	clearScreen(fTTY)
-
-	os.Stdout = fTTY
-	os.Stderr = fTTY
-	os.Stdin = fTTY
+	clearScreen(os.Stdout)
 
 	setColors(conf.FgColor, conf.BgColor)
-	clearScreen(fTTY)
+	clearScreen(os.Stdout)
 
 	if conf.PrintIssue {
 		fmt.Println()
@@ -52,7 +77,7 @@ func startDaemon(conf *config) *os.File {
 
 	switchTTY(conf)
 
-	return fTTY
+	return os.Stdout
 }
 
 // Stops daemon mode and closes opened TTY, if allowed
